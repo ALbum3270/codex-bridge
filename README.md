@@ -39,7 +39,7 @@ install lives somewhere unusual.
 ## Install
 
 ```bash
-git clone https://github.com/<you>/codex-bridge.git
+git clone https://github.com/ALbum3270/codex-bridge.git
 ```
 
 Then register it with Claude Code — either **per project**, by adding to `.mcp.json` in
