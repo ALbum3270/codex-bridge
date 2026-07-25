@@ -163,7 +163,8 @@ function summarizeTurn(turn) {
 async function runTurn(srv, prompt, opts = {}, openThread) {
   const { write = false, model = null, effort = null, onEvent = null } = opts;
   const collected = {
-    threadId: null, turnId: null, reasoning: [], commands: [], fileChanges: [],
+    threadId: null, turnId: null, status: null, turnError: null,
+    reasoning: [], commands: [], fileChanges: [],
     messages: [], tokenUsage: null, errors: [],
   };
 
@@ -205,10 +206,19 @@ async function runTurn(srv, prompt, opts = {}, openThread) {
       case 'error':
         collected.errors.push(params); emit({ type: 'error', error: params });
         break;
-      case 'turn/completed':
-        emit({ type: 'turnCompleted' });
+      case 'turn/completed': {
+        // `completed` is only one of four terminal states — interrupted and
+        // failed arrive here too. Resolving without reading status would report
+        // a failed turn as a successful one with an empty reply.
+        const turn = params.turn || {};
+        collected.status = turn.status || 'completed';
+        // Kept out of `errors`: a failing turn usually also emits its own error
+        // notification, and appending here would report the same failure twice.
+        if (turn.error) collected.turnError = turn.error;
+        emit({ type: 'turnCompleted', status: collected.status });
         turnDone();
         break;
+      }
       default:
         break;
     }

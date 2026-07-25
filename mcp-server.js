@@ -200,6 +200,12 @@ function turnOpts(args) {
 // Shared rendering of a completed turn: what Codex ran, what it changed, what it said.
 function renderTurn(res) {
   let out = '';
+  // A turn can end as interrupted or failed, both of which otherwise look like
+  // a successful turn that happened to say nothing.
+  if (res.status && res.status !== 'completed') {
+    const why = res.turnError && res.turnError.message ? ` — ${ops.oneline(res.turnError.message, 300)}` : '';
+    out += `\n!! Turn did not complete: status=${res.status}${why}\n`;
+  }
   if (res.commands.length) {
     out += `\nCommands executed (${res.commands.length}):\n` +
       res.commands.map((c) => `  $ ${c.command}  (exit ${c.exit})`).join('\n') + '\n';

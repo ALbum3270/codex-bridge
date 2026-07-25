@@ -81,6 +81,10 @@ claude mcp add --scope user codex-bridge -- node /absolute/path/to/codex-bridge/
 by default, so unattended turns never hang on an approval prompt. Pass `write: true` for a
 `workspace-write` sandbox when you want Codex to actually edit files.
 
+A turn can end `failed` or `interrupted`, not just `completed`. Those are reported as
+`!! Turn did not complete: status=… — <reason>` rather than as a successful turn that
+happened to say nothing.
+
 Threads made by `codex_start` are ordinary sessions — they land in `~/.codex/sessions`,
 show up in the Codex app and in `codex_list`, and `codex_send` continues them. Pass `cwd`
 explicitly; it otherwise defaults to the bridge process's working directory, which is
