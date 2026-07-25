@@ -151,14 +151,19 @@ function summarizeTurn(turn) {
   return { id: turn.id, status: turn.status, records: out };
 }
 
-// Run one turn on a thread that is already open in `srv` (freshly started or
-// resumed), streaming events until the turn completes. Shared by sendToThread
-// and startThread — the only difference between them is how the thread is opened.
+// Run one turn, streaming events until it completes. Shared by sendToThread and
+// startThread, which differ only in how the thread is opened — that is what
+// `openThread` supplies: an async fn returning the opened thread ({id, ...}).
+//
+// The notification handler is installed BEFORE openThread runs, deliberately.
+// app-server can emit restored notifications (tokenUsage) immediately after the
+// thread/resume response, and readline dispatches whatever arrived in the same
+// stdout batch before an async continuation gets a chance to subscribe.
 // opts: { write:false, model, effort, onEvent }
-async function runTurn(srv, threadId, prompt, opts = {}) {
+async function runTurn(srv, prompt, opts = {}, openThread) {
   const { write = false, model = null, effort = null, onEvent = null } = opts;
   const collected = {
-    threadId, turnId: null, reasoning: [], commands: [], fileChanges: [],
+    threadId: null, turnId: null, reasoning: [], commands: [], fileChanges: [],
     messages: [], tokenUsage: null, errors: [],
   };
 
@@ -209,7 +214,12 @@ async function runTurn(srv, threadId, prompt, opts = {}) {
     }
   });
 
+  let capTimer = null;
   try {
+    const thread = await openThread();
+    const threadId = thread.id;
+    collected.threadId = threadId;
+
     // Non-interactive: never ask for approval, sandbox scoped by `write`.
     const turnParams = {
       threadId,
@@ -224,13 +234,24 @@ async function runTurn(srv, threadId, prompt, opts = {}) {
       collected.turnId = startRes.turnId || startRes.turn.id;
     }
 
-    // Wait for completion (with a hard cap).
-    const cap = new Promise((_, rej) => setTimeout(() => rej(new Error('turn timed out')), 900000));
-    await Promise.race([donePromise, cap]);
+    // Wait for completion. Three ways out: the turn finishes, the hard cap
+    // fires, or app-server dies — without that last guard a crashed server
+    // leaves us blocked for the full cap, since a dead process sends no
+    // turn/completed and only in-flight RPCs get rejected.
+    const cap = new Promise((_, rej) => {
+      capTimer = setTimeout(() => rej(new Error('turn timed out')), 900000);
+    });
+    const exitGuard = srv.exited.then((code) => {
+      throw new Error(`app-server exited (code ${code}) before the turn completed`);
+    });
+    await Promise.race([donePromise, cap, exitGuard]);
 
     return collected;
   } finally {
     unsubscribe();
+    // Leaving this armed keeps an active timer (and the event loop) alive for
+    // the full 15 minutes after the call returns.
+    if (capTimer) clearTimeout(capTimer);
   }
 }
 
@@ -238,14 +259,14 @@ async function runTurn(srv, threadId, prompt, opts = {}) {
 // opts: { write:false, model, effort, cwd, onEvent }
 async function sendToThread(threadId, prompt, opts = {}) {
   const { cwd = null } = opts;
-  return withServer(async (srv) => {
+  return withServer(async (srv) => runTurn(srv, prompt, opts, async () => {
     // Rehydrate from disk. `cwd` overrides the directory the thread runs in;
     // omitted, the thread keeps the cwd it was recorded with.
     const resumeParams = { threadId };
     if (cwd) resumeParams.cwd = cwd;
     await srv.request('thread/resume', resumeParams);
-    return runTurn(srv, threadId, prompt, opts);
-  });
+    return { id: threadId };
+  }));
 }
 
 // Create a brand-new thread and run its first turn. The thread lands in
@@ -255,21 +276,35 @@ async function sendToThread(threadId, prompt, opts = {}) {
 async function startThread(prompt, opts = {}) {
   const { model = null, cwd = null } = opts;
   return withServer(async (srv) => {
-    const startParams = {};
-    if (cwd) startParams.cwd = cwd;
-    if (model) startParams.model = model;
-    const res = await srv.request('thread/start', startParams);
-    const th = (res && res.thread) || {};
-    if (!th.id) throw new Error('thread/start returned no thread id');
-    const turn = await runTurn(srv, th.id, prompt, opts);
-    return {
-      ...turn,
-      thread: {
-        id: th.id, cwd: th.cwd, path: th.path,
-        model: res.model || model || null,
-        source: formatSource(th.source),
-      },
-    };
+    let th = null;
+    let startedModel = null;
+    try {
+      const turn = await runTurn(srv, prompt, opts, async () => {
+        const startParams = {};
+        if (cwd) startParams.cwd = cwd;
+        if (model) startParams.model = model;
+        const res = await srv.request('thread/start', startParams);
+        th = (res && res.thread) || {};
+        if (!th.id) throw new Error('thread/start returned no thread id');
+        startedModel = res.model || model || null;
+        return th;
+      });
+      return {
+        ...turn,
+        thread: {
+          id: th.id, cwd: th.cwd, path: th.path,
+          model: startedModel, source: formatSource(th.source),
+        },
+      };
+    } catch (e) {
+      // The thread already exists on disk once thread/start returns. Losing its
+      // id to a turn failure would strand it — findable only by trawling codex_list.
+      if (th && th.id) {
+        e.threadId = th.id;
+        e.message = `${e.message} (thread ${th.id} was created and is resumable)`;
+      }
+      throw e;
+    }
   });
 }
 

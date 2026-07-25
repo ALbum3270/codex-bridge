@@ -41,9 +41,14 @@ class AppServer {
     this.proc.stderr.on('data', (d) => { if (this.debug) process.stderr.write('[appsrv] ' + d); });
     const rl = readline.createInterface({ input: this.proc.stdout });
     rl.on('line', (line) => this._onLine(line));
+    // Callers waiting on notifications rather than an RPC reply (a turn running
+    // to completion) get no signal from rejected pending requests — they need
+    // to know the process is gone. Resolves with the exit code.
+    this.exited = new Promise((resolve) => { this._onExit = resolve; });
     this.proc.on('exit', (code) => {
       for (const [, p] of this.pending) p.reject(new Error('app-server exited, code=' + code));
       this.pending.clear();
+      this._onExit(code);
     });
     return this;
   }
