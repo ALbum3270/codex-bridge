@@ -1,0 +1,30 @@
+{
+  "name": "codex-bridge",
+  "version": "0.1.0",
+  "description": "MCP server that lets Claude Code read and continue existing OpenAI Codex sessions, via codex app-server. Zero dependencies.",
+  "main": "mcp-server.js",
+  "bin": {
+    "codex-bridge": "mcp-server.js"
+  },
+  "files": [
+    "appserver-client.js",
+    "codex-ops.js",
+    "mcp-server.js",
+    "smoke.js",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "claude-code",
+    "codex",
+    "openai-codex",
+    "app-server"
+  ],
+  "license": "MIT",
+  "dependencies": {}
+}
