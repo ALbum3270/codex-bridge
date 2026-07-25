@@ -151,70 +151,66 @@ function summarizeTurn(turn) {
   return { id: turn.id, status: turn.status, records: out };
 }
 
-// Send a new prompt into an existing thread: resume from disk, start a turn,
-// stream events, resolve when the turn completes.
-// opts: { write:false, model, effort, cwd, onEvent }
-async function sendToThread(threadId, prompt, opts = {}) {
-  const { write = false, model = null, effort = null, cwd = null, onEvent = null } = opts;
-  return withServer(async (srv) => {
-    const collected = {
-      threadId, turnId: null, reasoning: [], commands: [], fileChanges: [],
-      messages: [], tokenUsage: null, errors: [],
-    };
+// Run one turn on a thread that is already open in `srv` (freshly started or
+// resumed), streaming events until the turn completes. Shared by sendToThread
+// and startThread — the only difference between them is how the thread is opened.
+// opts: { write:false, model, effort, onEvent }
+async function runTurn(srv, threadId, prompt, opts = {}) {
+  const { write = false, model = null, effort = null, onEvent = null } = opts;
+  const collected = {
+    threadId, turnId: null, reasoning: [], commands: [], fileChanges: [],
+    messages: [], tokenUsage: null, errors: [],
+  };
 
-    const emit = (ev) => { if (onEvent) { try { onEvent(ev); } catch { /* ignore */ } } };
+  const emit = (ev) => { if (onEvent) { try { onEvent(ev); } catch { /* ignore */ } } };
 
-    let turnDone;
-    const donePromise = new Promise((res) => { turnDone = res; });
+  let turnDone;
+  const donePromise = new Promise((res) => { turnDone = res; });
 
-    srv.onNotification((method, params) => {
-      switch (method) {
-        case 'turn/started':
-          collected.turnId = params.turnId || (params.turn && params.turn.id) || collected.turnId;
-          emit({ type: 'turnStarted', turnId: collected.turnId });
-          break;
-        case 'item/completed': {
-          const item = params.item || params;
-          const rec = itemToRecord(item);
-          if (!rec) break;
-          if (rec.kind === 'reasoning') {
-            collected.reasoning.push(rec.text); emit({ type: 'reasoning', text: rec.text });
-          } else if (rec.kind === 'message') {
-            // skip the echoed user message; keep assistant output
-            if (rec.role === 'assistant' && rec.text) {
-              collected.messages.push({ phase: rec.phase, text: rec.text });
-              emit({ type: 'message', phase: rec.phase, text: rec.text });
-            }
-          } else if (rec.kind === 'command') {
-            collected.commands.push({ command: rec.text, exit: rec.exit });
-            emit({ type: 'command', command: rec.text, exit: rec.exit });
-          } else if (rec.kind === 'fileChange') {
-            collected.fileChanges.push({ paths: rec.text ? rec.text.split(', ') : [] });
-            emit({ type: 'fileChange', paths: rec.text });
+  const unsubscribe = srv.onNotification((method, params) => {
+    switch (method) {
+      case 'turn/started':
+        collected.turnId = params.turnId || (params.turn && params.turn.id) || collected.turnId;
+        emit({ type: 'turnStarted', turnId: collected.turnId });
+        break;
+      case 'item/completed': {
+        const item = params.item || params;
+        const rec = itemToRecord(item);
+        if (!rec) break;
+        if (rec.kind === 'reasoning') {
+          collected.reasoning.push(rec.text); emit({ type: 'reasoning', text: rec.text });
+        } else if (rec.kind === 'message') {
+          // skip the echoed user message; keep assistant output
+          if (rec.role === 'assistant' && rec.text) {
+            collected.messages.push({ phase: rec.phase, text: rec.text });
+            emit({ type: 'message', phase: rec.phase, text: rec.text });
           }
-          break;
+        } else if (rec.kind === 'command') {
+          collected.commands.push({ command: rec.text, exit: rec.exit });
+          emit({ type: 'command', command: rec.text, exit: rec.exit });
+        } else if (rec.kind === 'fileChange') {
+          collected.fileChanges.push({ paths: rec.text ? rec.text.split(', ') : [] });
+          emit({ type: 'fileChange', paths: rec.text });
         }
-        case 'thread/tokenUsage/updated':
-          collected.tokenUsage = params.tokenUsage || params.usage || params;
-          break;
-        case 'error':
-          collected.errors.push(params); emit({ type: 'error', error: params });
-          break;
-        case 'turn/completed':
-          emit({ type: 'turnCompleted' });
-          turnDone();
-          break;
-        default:
-          break;
+        break;
       }
-    });
+      case 'thread/tokenUsage/updated':
+        collected.tokenUsage = params.tokenUsage || params.usage || params;
+        break;
+      case 'error':
+        collected.errors.push(params); emit({ type: 'error', error: params });
+        break;
+      case 'turn/completed':
+        emit({ type: 'turnCompleted' });
+        turnDone();
+        break;
+      default:
+        break;
+    }
+  });
 
-    // 1) resume the thread from disk (rehydrate)
-    const resumeParams = { threadId };
-    if (cwd) resumeParams.cwd = cwd;
-    await srv.request('thread/resume', resumeParams);
-
-    // 2) start a turn (non-interactive: never ask, sandbox scoped by `write`)
+  try {
+    // Non-interactive: never ask for approval, sandbox scoped by `write`.
     const turnParams = {
       threadId,
       input: [{ type: 'text', text: prompt }],
@@ -228,12 +224,53 @@ async function sendToThread(threadId, prompt, opts = {}) {
       collected.turnId = startRes.turnId || startRes.turn.id;
     }
 
-    // 3) wait for completion (with a hard cap)
+    // Wait for completion (with a hard cap).
     const cap = new Promise((_, rej) => setTimeout(() => rej(new Error('turn timed out')), 900000));
     await Promise.race([donePromise, cap]);
 
     return collected;
+  } finally {
+    unsubscribe();
+  }
+}
+
+// Send a new prompt into an existing thread: resume from disk, run a turn.
+// opts: { write:false, model, effort, cwd, onEvent }
+async function sendToThread(threadId, prompt, opts = {}) {
+  const { cwd = null } = opts;
+  return withServer(async (srv) => {
+    // Rehydrate from disk. `cwd` overrides the directory the thread runs in;
+    // omitted, the thread keeps the cwd it was recorded with.
+    const resumeParams = { threadId };
+    if (cwd) resumeParams.cwd = cwd;
+    await srv.request('thread/resume', resumeParams);
+    return runTurn(srv, threadId, prompt, opts);
   });
 }
 
-module.exports = { listThreads, readThread, sendToThread, formatSource, formatWhen, formatLineage, oneline };
+// Create a brand-new thread and run its first turn. The thread lands in
+// ~/.codex/sessions like any other, so it shows up in the Codex app and in
+// codex_list afterwards. Returns the turn result plus the new thread's metadata.
+// opts: { write:false, model, effort, cwd, onEvent }
+async function startThread(prompt, opts = {}) {
+  const { model = null, cwd = null } = opts;
+  return withServer(async (srv) => {
+    const startParams = {};
+    if (cwd) startParams.cwd = cwd;
+    if (model) startParams.model = model;
+    const res = await srv.request('thread/start', startParams);
+    const th = (res && res.thread) || {};
+    if (!th.id) throw new Error('thread/start returned no thread id');
+    const turn = await runTurn(srv, th.id, prompt, opts);
+    return {
+      ...turn,
+      thread: {
+        id: th.id, cwd: th.cwd, path: th.path,
+        model: res.model || model || null,
+        source: formatSource(th.source),
+      },
+    };
+  });
+}
+
+module.exports = { listThreads, readThread, sendToThread, startThread, formatSource, formatWhen, formatLineage, oneline };

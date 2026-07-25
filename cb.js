@@ -4,6 +4,7 @@
 //   node cb.js list [limit]
 //   node cb.js read <threadId> [maxTurns]
 //   node cb.js send <threadId> "prompt" [--write]
+//   node cb.js start "prompt" [cwd] [--write]
 const ops = require('./codex-ops');
 
 const ts = ops.formatWhen;
@@ -31,8 +32,13 @@ async function main() {
     const res = await ops.sendToThread(a, b, { write: process.argv.includes('--write') });
     console.log(res.messages.map((m) => m.text).join('\n---\n'));
     console.log(`\n[commands: ${res.commands.length}, fileChanges: ${res.fileChanges.length}, errors: ${res.errors.length}]`);
+  } else if (cmd === 'start') {
+    const res = await ops.startThread(a, { cwd: b && !b.startsWith('--') ? b : null, write: process.argv.includes('--write') });
+    console.log(`# new thread ${res.thread.id}  cwd=${res.thread.cwd}\n`);
+    console.log(res.messages.map((m) => m.text).join('\n---\n'));
+    console.log(`\n[commands: ${res.commands.length}, fileChanges: ${res.fileChanges.length}, errors: ${res.errors.length}]`);
   } else {
-    console.log('usage: node cb.js list [limit] | read <id> [maxTurns] | send <id> "prompt" [--write]');
+    console.log('usage: node cb.js list [limit] | read <id> [maxTurns] | send <id> "prompt" [--write] | start "prompt" [cwd] [--write]');
   }
 }
 main().then(() => process.exit(0)).catch((e) => { console.error('ERR', e.message); process.exit(1); });

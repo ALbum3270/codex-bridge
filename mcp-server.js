@@ -7,6 +7,8 @@
 //   codex_read  { threadId, maxTurns? }             -> thread history (no resume, no token cost)
 //   codex_send  { threadId, prompt, write?, model?, effort?, cwd? }
 //                                                    -> resume + new turn, returns Codex output
+//   codex_start { prompt, cwd?, write?, model?, effort? }
+//                                                    -> new thread + first turn, returns its id
 
 const ops = require('./codex-ops');
 
@@ -53,6 +55,22 @@ const TOOLS = [
         model: { type: 'string', description: 'Optional model override, e.g. "gpt-5.5".' },
         effort: { type: 'string', description: 'Optional reasoning effort: low | medium | high | xhigh.' },
         cwd: { type: 'string', description: 'Optional: run the thread from this directory instead of the cwd it was recorded with.' },
+      },
+    },
+  },
+  {
+    name: 'codex_start',
+    description:
+      'Start a NEW Codex thread and run its first turn, returning the new thread id along with Codex\'s reasoning, executed commands, file changes and final answer. The thread is written to Codex\'s session store, so it appears in the Codex app and in codex_list, and codex_send can continue it later. Use this for fresh work; use codex_send to continue an existing thread. Costs Codex-side tokens. Default sandbox is read-only; pass write:true to allow file edits.',
+    inputSchema: {
+      type: 'object',
+      required: ['prompt'],
+      properties: {
+        prompt: { type: 'string', description: 'The initial instruction for the new Codex thread.' },
+        cwd: { type: 'string', description: 'Working directory for the new thread. Defaults to the bridge process\'s cwd — pass this explicitly when it matters.' },
+        write: { type: 'boolean', description: 'Allow Codex to modify files (workspace-write sandbox). Default false (read-only).' },
+        model: { type: 'string', description: 'Optional model override, e.g. "gpt-5.5".' },
+        effort: { type: 'string', description: 'Optional reasoning effort: low | medium | high | xhigh.' },
       },
     },
   },
@@ -152,31 +170,50 @@ async function callTool(name, args) {
   if (name === 'codex_send') {
     if (!args.threadId) throw new Error('threadId is required');
     if (!args.prompt) throw new Error('prompt is required');
-    const res = await ops.sendToThread(args.threadId, args.prompt, {
-      write: !!args.write,
-      model: args.model || null,
-      effort: args.effort || null,
-      cwd: args.cwd || null,
-    });
-    let out = `Sent to thread ${res.threadId} (turn ${res.turnId || '?'}).\n`;
-    if (res.commands.length) {
-      out += `\nCommands executed (${res.commands.length}):\n` +
-        res.commands.map((c) => `  $ ${c.command}  (exit ${c.exit})`).join('\n') + '\n';
-    }
-    if (res.fileChanges.length) {
-      out += `\nFiles changed (${res.fileChanges.length}):\n` +
-        res.fileChanges.map((f) => '  ' + (f.paths || []).join(', ')).join('\n') + '\n';
-    }
-    if (res.errors.length) {
-      out += `\nErrors (${res.errors.length}):\n` + res.errors.map((e) => '  ' + JSON.stringify(e).slice(0, 200)).join('\n') + '\n';
-    }
-    const finalMsgs = res.messages.filter((m) => m.phase === 'final_answer' || m.phase === 'final');
-    const shown = (finalMsgs.length ? finalMsgs : res.messages).map((m) => m.text);
-    out += `\n=== Codex reply ===\n${shown.join('\n\n') || '(no message)'}`;
-    return out;
+    const res = await ops.sendToThread(args.threadId, args.prompt, turnOpts(args));
+    return `Sent to thread ${res.threadId} (turn ${res.turnId || '?'}).\n` + renderTurn(res);
+  }
+
+  if (name === 'codex_start') {
+    if (!args.prompt) throw new Error('prompt is required');
+    const res = await ops.startThread(args.prompt, turnOpts(args));
+    const t = res.thread;
+    return `Started thread ${t.id} (turn ${res.turnId || '?'}).\n` +
+      `  cwd: ${t.cwd || '?'}${t.model ? `  model: ${t.model}` : ''}\n` +
+      `  rollout: ${t.path || '?'}\n` +
+      `  continue it with codex_send threadId="${t.id}"\n` + renderTurn(res);
   }
 
   throw new Error('Unknown tool: ' + name);
+}
+
+// Shared turn options for codex_send / codex_start.
+function turnOpts(args) {
+  return {
+    write: !!args.write,
+    model: args.model || null,
+    effort: args.effort || null,
+    cwd: args.cwd || null,
+  };
+}
+
+// Shared rendering of a completed turn: what Codex ran, what it changed, what it said.
+function renderTurn(res) {
+  let out = '';
+  if (res.commands.length) {
+    out += `\nCommands executed (${res.commands.length}):\n` +
+      res.commands.map((c) => `  $ ${c.command}  (exit ${c.exit})`).join('\n') + '\n';
+  }
+  if (res.fileChanges.length) {
+    out += `\nFiles changed (${res.fileChanges.length}):\n` +
+      res.fileChanges.map((f) => '  ' + (f.paths || []).join(', ')).join('\n') + '\n';
+  }
+  if (res.errors.length) {
+    out += `\nErrors (${res.errors.length}):\n` + res.errors.map((e) => '  ' + JSON.stringify(e).slice(0, 200)).join('\n') + '\n';
+  }
+  const finalMsgs = res.messages.filter((m) => m.phase === 'final_answer' || m.phase === 'final');
+  const shown = (finalMsgs.length ? finalMsgs : res.messages).map((m) => m.text);
+  return out + `\n=== Codex reply ===\n${shown.join('\n\n') || '(no message)'}`;
 }
 
 log('ready, tools: ' + TOOLS.map((t) => t.name).join(', '));

@@ -36,6 +36,10 @@ The bridge locates Codex's `codex.js` automatically (`%APPDATA%\npm\node_modules
 Windows, standard global paths elsewhere). Override with the `CODEX_JS` env var if your
 install lives somewhere unusual.
 
+Keep the CLI current: `codex_start` opens threads with your account's **default** model, and
+a CLI older than that model rejects the turn outright (`The '<model>' model requires a newer
+version of Codex`). Resumed threads hide this — they carry the model they were created with.
+
 ## Install
 
 ```bash
@@ -71,10 +75,16 @@ claude mcp add --scope user codex-bridge -- node /absolute/path/to/codex-bridge/
 | `codex_list` | List recent threads — including `exec`/subagent sessions the Codex picker hides | free |
 | `codex_read` | Read a thread's history **without resuming it** | free — no model call |
 | `codex_send` | Resume a thread from disk and run one turn; returns the reply, commands executed and files changed | Codex-side tokens |
+| `codex_start` | Create a **new** thread and run its first turn; returns the new thread id | Codex-side tokens |
 
-`codex_send` runs with `approvalPolicy: never` and a **read-only** sandbox by default, so
-unattended turns never hang on an approval prompt. Pass `write: true` for a
+`codex_send` and `codex_start` run with `approvalPolicy: never` and a **read-only** sandbox
+by default, so unattended turns never hang on an approval prompt. Pass `write: true` for a
 `workspace-write` sandbox when you want Codex to actually edit files.
+
+Threads made by `codex_start` are ordinary sessions — they land in `~/.codex/sessions`,
+show up in the Codex app and in `codex_list`, and `codex_send` continues them. Pass `cwd`
+explicitly; it otherwise defaults to the bridge process's working directory, which is
+rarely what you want. `model` follows your Codex default unless you override it.
 
 Because `codex_send` makes Codex reload the thread's entire history, a short prompt into a
 long thread still costs real tokens. `codex_read` is free — prefer it when you only need
@@ -96,9 +106,9 @@ It's a protocol adapter between two stdio JSON-RPC dialects:
 | File | Role |
 |---|---|
 | `appserver-client.js` | Spawns `codex app-server --stdio`, speaks its JSON-RPC, streams notifications |
-| `codex-ops.js` | The three operations, built on `thread/list`, `thread/read`, `thread/resume` + `turn/start` |
+| `codex-ops.js` | The four operations, built on `thread/list`, `thread/read`, `thread/resume`, `thread/start` + `turn/start` |
 | `mcp-server.js` | A hand-rolled MCP server (`initialize` / `tools/list` / `tools/call`) — this is why there are no dependencies |
-| `cb.js` | CLI over the same ops, so you can exercise them without restarting the MCP server: `node cb.js list \| read <id> \| send <id> "prompt"` |
+| `cb.js` | CLI over the same ops, so you can exercise them without restarting the MCP server: `node cb.js list \| read <id> \| send <id> "prompt" \| start "prompt" [cwd]` |
 | `smoke.js` | Manual test: `node smoke.js list \| read <id> \| send <id> "prompt"` |
 
 Two details worth knowing if you fork this:
@@ -121,6 +131,10 @@ Two details worth knowing if you fork this:
 - Cloud Codex sessions (web / cloud tasks) never touch local disk, so they're invisible here.
 - One `app-server` process is spawned per call — a few hundred ms of startup, in exchange
   for no shared state between calls.
+- **Approval policy is deliberately not exposed.** Turns are pinned to `never`. The client
+  auto-answers server→client requests with an empty result, which is not a real approval
+  decision — offering `on-request` here would just hang the turn. Exposing it means
+  implementing `onServerRequest` properly first.
 
 ## License
 
