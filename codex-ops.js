@@ -4,6 +4,49 @@
 
 const { AppServer } = require('./appserver-client');
 
+// `source` arrives as a serde-tagged enum: unit variants come through as bare
+// strings ("cli", "vscode"), variants carrying data as single-key objects
+// ({subAgent:{other:'guardian'}}). Flatten to a readable string so callers can
+// interpolate it directly.
+function formatSource(src) {
+  if (src == null) return 'unknown';
+  if (typeof src === 'string') return src;
+  if (typeof src !== 'object') return String(src);
+  const keys = Object.keys(src);
+  if (keys.length === 0) return 'unknown';
+  if (keys.length > 1) return JSON.stringify(src);
+  const tag = keys[0];
+  const inner = formatSource(src[tag]);
+  if (tag === 'other') return inner;            // {other:'guardian'} -> guardian
+  return inner && inner !== 'unknown' ? `${tag}:${inner}` : tag;
+}
+
+// Collapse whitespace to one line and cap length. Previews can run to several
+// KB (they replay whole turns), so every render site must bound them.
+function oneline(s, n = 80) {
+  const flat = (s || '').replace(/\s+/g, ' ').trim();
+  return flat.length > n ? flat.slice(0, n - 1) + '…' : flat;
+}
+
+// Human-readable lineage for a mapped thread, or '' when it stands alone.
+// Sub-agent and forked threads replay their parent's history, so they show up
+// in listings with near-identical previews; this is what tells them apart.
+function formatLineage(t) {
+  const parts = [];
+  if (t.parentThreadId) parts.push(`child of ${t.parentThreadId}`);
+  if (t.forkedFromId && t.forkedFromId !== t.parentThreadId) parts.push(`forked from ${t.forkedFromId}`);
+  return parts.join(', ');
+}
+
+// Unix seconds -> "YYYY-MM-DD HH:MM" in local time. Empty string if absent.
+function formatWhen(unixSeconds) {
+  if (!unixSeconds) return '';
+  const d = new Date(unixSeconds * 1000);
+  if (Number.isNaN(d.getTime())) return '';
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
 async function withServer(fn, opts = {}) {
   const srv = new AppServer(opts).start();
   try {
@@ -25,12 +68,19 @@ async function listThreads({ limit = 30, cwd = null, allSources = true } = {}) {
     const rows = (res && res.data) || [];
     return rows.map((t) => ({
       id: t.id,
+      name: t.name || null,
       preview: t.preview || t.name || '',
       cwd: t.cwd,
-      source: t.source,
-      model: t.model || (t.modelProvider ? t.modelProvider : null),
+      source: formatSource(t.source),
+      sourceRaw: t.source,
+      // Lineage: parentThreadId = spawned by that thread (sub-agent),
+      // forkedFromId = branched off it. Explains near-duplicate rows.
+      parentThreadId: t.parentThreadId || null,
+      forkedFromId: t.forkedFromId || null,
+      model: t.model || null,
+      modelProvider: t.modelProvider || null,
       updatedAt: t.updatedAt,
-      recencyAt: t.recencyAt,
+      recencyAt: t.recencyAt || t.updatedAt,
       status: t.status && t.status.type,
     }));
   });
@@ -46,7 +96,9 @@ async function readThread(threadId, { maxTurns = 20 } = {}) {
     const trimmed = turns.slice(-maxTurns).map((t) => summarizeTurn(t));
     return {
       thread: {
-        id: th.id, preview: th.preview, cwd: th.cwd, source: th.source,
+        id: th.id, name: th.name || null, preview: th.preview, cwd: th.cwd,
+        source: formatSource(th.source), sourceRaw: th.source,
+        parentThreadId: th.parentThreadId || null, forkedFromId: th.forkedFromId || null,
         model: th.model, createdAt: th.createdAt, updatedAt: th.updatedAt,
         path: th.path, status: th.status && th.status.type, turnCount: turns.length,
       },
@@ -182,4 +234,4 @@ async function sendToThread(threadId, prompt, opts = {}) {
   });
 }
 
-module.exports = { listThreads, readThread, sendToThread };
+module.exports = { listThreads, readThread, sendToThread, formatSource, formatWhen, formatLineage, oneline };

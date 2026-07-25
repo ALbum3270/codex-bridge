@@ -17,7 +17,7 @@ const TOOLS = [
   {
     name: 'codex_list',
     description:
-      'List recent Codex CLI/IDE sessions (threads) from local storage, including sessions the Codex picker hides (exec/subagent). Returns id, preview, cwd, source, status. Read-only, no token cost.',
+      'List recent Codex CLI/IDE sessions (threads) from local storage, including sessions the Codex picker hides (exec/subagent). Returns id, name, preview, cwd, source, last-activity time, status, and lineage. Sub-agent and forked threads replay their parent\'s history, so several rows sharing near-identical previews is normal — the "child of / forked from" line says which thread each came from. Read-only, no token cost.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -29,7 +29,7 @@ const TOOLS = [
   {
     name: 'codex_read',
     description:
-      'Read a Codex thread\'s conversation history by thread id WITHOUT resuming it. Rehydrates from disk (works on threads created by any other Codex process). No model call, no token cost. Returns user/assistant messages, reasoning, commands and file changes.',
+      'Read a Codex thread\'s conversation history by thread id WITHOUT resuming it. Rehydrates from disk (works on threads created by any other Codex process). No model call, no token cost. Returns thread metadata (including lineage: which thread it was forked from or spawned by) plus user/assistant messages, reasoning, commands and file changes.',
     inputSchema: {
       type: 'object',
       required: ['threadId'],
@@ -118,8 +118,13 @@ async function callTool(name, args) {
   if (name === 'codex_list') {
     const rows = await ops.listThreads({ limit: args.limit || 30, cwd: args.cwd || null });
     const lines = rows.map((r) => {
-      const when = r.recencyAt ? new Date(r.recencyAt * 1000).toLocaleString() : '';
-      return `${r.id}  [${r.source}]  ${when}\n    ${(r.preview || '').replace(/\s+/g, ' ').slice(0, 80)}  (cwd: ${r.cwd || '?'})`;
+      const when = ops.formatWhen(r.recencyAt);
+      const status = r.status ? `  ${r.status}` : '';
+      const lineage = ops.formatLineage(r);
+      const name = r.name ? `"${r.name}"  ` : '';
+      return `${r.id}  [${r.source}]  ${when}${status}` +
+        (lineage ? `\n    ↳ ${lineage}` : '') +
+        `\n    ${name}${ops.oneline(r.preview, 80)}  (cwd: ${r.cwd || '?'})`;
     });
     return `Found ${rows.length} Codex thread(s):\n\n` + lines.join('\n');
   }
@@ -128,7 +133,10 @@ async function callTool(name, args) {
     if (!args.threadId) throw new Error('threadId is required');
     const res = await ops.readThread(args.threadId, { maxTurns: args.maxTurns || 20 });
     const t = res.thread;
-    let out = `Thread ${t.id}\n  preview: ${t.preview}\n  cwd: ${t.cwd}\n  source: ${t.source}  status: ${t.status}  totalTurns: ${t.turnCount}\n  rollout: ${t.path}\n\n--- last ${res.turns.length} turn(s) ---\n`;
+    const lineage = ops.formatLineage(t);
+    let out = `Thread ${t.id}${t.name ? ` "${t.name}"` : ''}\n  preview: ${ops.oneline(t.preview, 160)}\n  cwd: ${t.cwd}\n  source: ${t.source}  status: ${t.status}  totalTurns: ${t.turnCount}\n`;
+    if (lineage) out += `  lineage: ${lineage}\n`;
+    out += `  rollout: ${t.path}\n\n--- last ${res.turns.length} turn(s) ---\n`;
     for (const turn of res.turns) {
       for (const rec of turn.records) {
         if (rec.kind === 'message') out += `\n[${rec.role}${rec.phase ? '/' + rec.phase : ''}]\n${rec.text}\n`;
