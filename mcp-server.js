@@ -35,7 +35,7 @@ const TOOLS = [
       required: ['threadId'],
       properties: {
         threadId: { type: 'string', description: 'Codex thread/session id (UUID).' },
-        maxTurns: { type: 'number', description: 'How many most-recent turns to return (default 20).' },
+        maxTurns: { type: 'number', description: 'How many most-recent turns to return (default 20). Pass 0 for thread metadata only (lineage, cwd, turn count) with no turn bodies.' },
       },
     },
   },
@@ -116,7 +116,7 @@ async function handleLine(line) {
 
 async function callTool(name, args) {
   if (name === 'codex_list') {
-    const rows = await ops.listThreads({ limit: args.limit || 30, cwd: args.cwd || null });
+    const rows = await ops.listThreads({ limit: args.limit ?? 30, cwd: args.cwd || null });
     const lines = rows.map((r) => {
       const when = ops.formatWhen(r.recencyAt);
       const status = r.status ? `  ${r.status}` : '';
@@ -131,7 +131,7 @@ async function callTool(name, args) {
 
   if (name === 'codex_read') {
     if (!args.threadId) throw new Error('threadId is required');
-    const res = await ops.readThread(args.threadId, { maxTurns: args.maxTurns || 20 });
+    const res = await ops.readThread(args.threadId, { maxTurns: args.maxTurns ?? 20 });
     const t = res.thread;
     const lineage = ops.formatLineage(t);
     let out = `Thread ${t.id}${t.name ? ` "${t.name}"` : ''}\n  preview: ${ops.oneline(t.preview, 160)}\n  cwd: ${t.cwd}\n  source: ${t.source}  status: ${t.status}  totalTurns: ${t.turnCount}\n`;

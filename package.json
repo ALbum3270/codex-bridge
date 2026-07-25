@@ -8,6 +8,7 @@
   },
   "files": [
     "appserver-client.js",
+    "cb.js",
     "codex-ops.js",
     "mcp-server.js",
     "smoke.js",

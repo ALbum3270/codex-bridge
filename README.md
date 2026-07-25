@@ -98,6 +98,7 @@ It's a protocol adapter between two stdio JSON-RPC dialects:
 | `appserver-client.js` | Spawns `codex app-server --stdio`, speaks its JSON-RPC, streams notifications |
 | `codex-ops.js` | The three operations, built on `thread/list`, `thread/read`, `thread/resume` + `turn/start` |
 | `mcp-server.js` | A hand-rolled MCP server (`initialize` / `tools/list` / `tools/call`) — this is why there are no dependencies |
+| `cb.js` | CLI over the same ops, so you can exercise them without restarting the MCP server: `node cb.js list \| read <id> \| send <id> "prompt"` |
 | `smoke.js` | Manual test: `node smoke.js list \| read <id> \| send <id> "prompt"` |
 
 Two details worth knowing if you fork this:
@@ -107,6 +108,13 @@ Two details worth knowing if you fork this:
   auto-replies to keep unattended runs alive.
 - **`sourceKinds` must be passed explicitly** to `thread/list`. Omit it and the server
   quietly returns interactive sessions only, hiding every `codex exec` and subagent thread.
+- **`source` is a tagged enum, not a string.** Unit variants serialize as bare strings
+  (`"cli"`, `"vscode"`), variants carrying data as single-key objects
+  (`{subAgent:{other:'guardian'}}`). Interpolating it directly renders `[object Object]`
+  for every subagent thread — run it through `formatSource()`.
+- **Sub-agent and forked threads replay their parent's history**, so listings contain rows
+  with near-identical previews that are not duplicates. `parentThreadId` / `forkedFromId`
+  are what tell them apart.
 
 ## Limitations
 

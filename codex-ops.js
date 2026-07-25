@@ -93,7 +93,9 @@ async function readThread(threadId, { maxTurns = 20 } = {}) {
     const res = await srv.request('thread/read', { threadId, includeTurns: true });
     const th = (res && res.thread) || {};
     const turns = Array.isArray(th.turns) ? th.turns : [];
-    const trimmed = turns.slice(-maxTurns).map((t) => summarizeTurn(t));
+    // Guard maxTurns <= 0: slice(-0) is slice(0), which would return every
+    // turn instead of none. 0 means "metadata only".
+    const trimmed = (maxTurns > 0 ? turns.slice(-maxTurns) : []).map((t) => summarizeTurn(t));
     return {
       thread: {
         id: th.id, name: th.name || null, preview: th.preview, cwd: th.cwd,
