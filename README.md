@@ -32,9 +32,10 @@ That is the missing piece, and it's what this bridge is built on.
 - **Node 18+**
 - No `npm install` — there are no dependencies
 
-The bridge locates Codex's `codex.js` automatically (`%APPDATA%\npm\node_modules\...` on
-Windows, standard global paths elsewhere). Override with the `CODEX_JS` env var if your
-install lives somewhere unusual.
+The bridge locates Codex's `codex.js` automatically: it follows the `codex` on your `PATH`
+first (which is what version managers like nvm, fnm and volta rely on), then falls back to
+the standard global install paths, preferring one whose per-platform binary is actually
+present. Override with the `CODEX_JS` env var to pin a specific install.
 
 Keep the CLI current: `codex_start` opens threads with your account's **default** model, and
 a CLI older than that model rejects the turn outright (`The '<model>' model requires a newer

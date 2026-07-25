@@ -9,16 +9,54 @@ const path = require('node:path');
 const os = require('node:os');
 const fs = require('node:fs');
 
+// Codex ships its real executable as a per-platform optional dependency; a
+// global install whose optional deps failed leaves a codex.js that exists and
+// throws "Missing optional dependency @openai/codex-<platform>-<arch>". Existence
+// alone is therefore not proof an install works.
+function hasPlatformBinary(codexJs) {
+  const pkgRoot = path.resolve(path.dirname(codexJs), '..');
+  const want = `codex-${process.platform}-${process.arch}`; // codex-linux-x64, codex-darwin-arm64, ...
+  return fs.existsSync(path.join(pkgRoot, 'node_modules', '@openai', want));
+}
+
+// The `codex` on PATH is the install the user actually runs, which version
+// managers (nvm, fnm, volta) put in a per-version directory no static list can
+// predict. Follow it to its real file, and only take it if it is the JS entry
+// point — a native binary is not something we can hand to `node`.
+function codexJsFromPath() {
+  const exts = process.platform === 'win32' ? ['.cmd', '.exe', ''] : [''];
+  for (const dir of (process.env.PATH || '').split(path.delimiter)) {
+    if (!dir) continue;
+    for (const ext of exts) {
+      const bin = path.join(dir, 'codex' + ext);
+      if (!fs.existsSync(bin)) continue;
+      try {
+        const real = fs.realpathSync(bin);
+        if (real.endsWith('.js')) return real;
+      } catch { /* unreadable link, keep looking */ }
+      return null; // found codex, but it is not a JS entry — let the PATH fallback spawn it
+    }
+  }
+  return null;
+}
+
 function resolveCodexJs() {
   if (process.env.CODEX_JS && fs.existsSync(process.env.CODEX_JS)) return process.env.CODEX_JS;
+
+  const fromPath = codexJsFromPath();
+  if (fromPath) return fromPath;
+
   const candidates = [
     path.join(process.env.APPDATA || '', 'npm', 'node_modules', '@openai', 'codex', 'bin', 'codex.js'),
     path.join(os.homedir(), 'AppData', 'Roaming', 'npm', 'node_modules', '@openai', 'codex', 'bin', 'codex.js'),
     '/usr/local/lib/node_modules/@openai/codex/bin/codex.js',
     path.join(os.homedir(), '.npm-global', 'lib', 'node_modules', '@openai', 'codex', 'bin', 'codex.js'),
-  ];
-  for (const c of candidates) { if (c && fs.existsSync(c)) return c; }
-  return null;
+  ].filter((c) => c && fs.existsSync(c));
+
+  // Prefer a candidate that can actually run. Falling back to one that merely
+  // exists keeps the old behaviour when the check is wrong (npm may hoist the
+  // platform package somewhere this does not look).
+  return candidates.find(hasPlatformBinary) || candidates[0] || null;
 }
 
 class AppServer {
