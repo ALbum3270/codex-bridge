@@ -153,7 +153,7 @@ function summarizeTurn(turn) {
 
 // Send a new prompt into an existing thread: resume from disk, start a turn,
 // stream events, resolve when the turn completes.
-// opts: { write:false, model, effort, onEvent }
+// opts: { write:false, model, effort, cwd, onEvent }
 async function sendToThread(threadId, prompt, opts = {}) {
   const { write = false, model = null, effort = null, cwd = null, onEvent = null } = opts;
   return withServer(async (srv) => {

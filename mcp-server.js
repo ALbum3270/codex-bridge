@@ -5,7 +5,7 @@
 // Tools:
 //   codex_list  { limit?, cwd? }                    -> recent Codex threads
 //   codex_read  { threadId, maxTurns? }             -> thread history (no resume, no token cost)
-//   codex_send  { threadId, prompt, write?, model?, effort? }
+//   codex_send  { threadId, prompt, write?, model?, effort?, cwd? }
 //                                                    -> resume + new turn, returns Codex output
 
 const ops = require('./codex-ops');
@@ -52,6 +52,7 @@ const TOOLS = [
         write: { type: 'boolean', description: 'Allow Codex to modify files (workspace-write sandbox). Default false (read-only).' },
         model: { type: 'string', description: 'Optional model override, e.g. "gpt-5.5".' },
         effort: { type: 'string', description: 'Optional reasoning effort: low | medium | high | xhigh.' },
+        cwd: { type: 'string', description: 'Optional: run the thread from this directory instead of the cwd it was recorded with.' },
       },
     },
   },
@@ -155,6 +156,7 @@ async function callTool(name, args) {
       write: !!args.write,
       model: args.model || null,
       effort: args.effort || null,
+      cwd: args.cwd || null,
     });
     let out = `Sent to thread ${res.threadId} (turn ${res.turnId || '?'}).\n`;
     if (res.commands.length) {
