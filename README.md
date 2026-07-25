@@ -118,9 +118,14 @@ It's a protocol adapter between two stdio JSON-RPC dialects:
 
 Two details worth knowing if you fork this:
 
-- **Server→client requests must be answered.** `app-server` can ask *you* things
-  (approvals, elicitations). If you ignore those, the turn hangs forever. The client
-  auto-replies to keep unattended runs alive.
+- **Server→client requests must be answered — with a valid answer.** `app-server` can ask
+  *you* things (approvals, elicitations, user input, auth refresh, client-side tool calls).
+  Ignore one and the turn hangs forever, but every response type has required fields, so
+  replying `{}` is a malformed answer the server may still act on. `defaultServerReply()`
+  answers each kind explicitly — declining what needs a human, granting nothing where a
+  permission profile is expected — and returns a JSON-RPC error for the ones a headless
+  client cannot serve. Note `approvalPolicy: never` suppresses only the approval family;
+  elicitation, user input, auth refresh and dynamic tool calls are not gated by it.
 - **`sourceKinds` must be passed explicitly** to `thread/list`. Omit it and the server
   quietly returns interactive sessions only, hiding every `codex exec` and subagent thread.
 - **`source` is a tagged enum, not a string.** Unit variants serialize as bare strings
@@ -136,6 +141,11 @@ Two details worth knowing if you fork this:
 - Cloud Codex sessions (web / cloud tasks) never touch local disk, so they're invisible here.
 - One `app-server` process is spawned per call — a few hundred ms of startup, in exchange
   for no shared state between calls.
+- Requiring `codex-ops` as a library in a short-lived script: call `process.exit()` when
+  done, as `cb.js` and `smoke.js` do. The process can linger briefly after an op resolves.
+  Nothing leaks — no orphaned `app-server` children, no active handles — but a script that
+  just falls off the end of `main()` may not exit promptly. Long-running hosts (the MCP
+  server) are unaffected.
 - **Approval policy is deliberately not exposed.** Turns are pinned to `never`. The client
   auto-answers server→client requests with an empty result, which is not a real approval
   decision — offering `on-request` here would just hang the turn. Exposing it means

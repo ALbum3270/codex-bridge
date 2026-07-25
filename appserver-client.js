@@ -59,6 +59,46 @@ function resolveCodexJs() {
   return candidates.find(hasPlatformBinary) || candidates[0] || null;
 }
 
+// app-server sends requests *to* the client, and ignoring one hangs the turn.
+// A blank reply is not an answer either: every response type has required
+// fields, so `{}` is a malformed answer the server may still act on. Answer
+// each kind explicitly instead, and for the ones a headless bridge genuinely
+// cannot serve, return a JSON-RPC error so the server fails fast rather than
+// proceeding on a fabricated result.
+//
+// Note approvalPolicy 'never' only suppresses the approval family; user-input,
+// elicitation, auth refresh and client-side tool calls are not gated by it.
+function defaultServerReply(method) {
+  switch (method) {
+    // Approval family. ReviewDecision has no "denied" variant — `timed_out` is
+    // the honest one here (nobody was watching), and unlike `abort` it declines
+    // this single command without tearing down the whole turn.
+    case 'execCommandApproval':
+    case 'applyPatchApproval':
+      return { result: { decision: 'timed_out' } };
+    case 'item/commandExecution/requestApproval':
+    case 'item/fileChange/requestApproval':
+      return { result: { decision: 'decline' } };
+    // Required field is the granted profile, not a decision: grant nothing.
+    case 'item/permissions/requestApproval':
+      return { result: { permissions: {} } };
+    // Questions aimed at a human. Decline rather than stall.
+    case 'mcpServer/elicitation/request':
+      return { result: { action: 'decline' } };
+    case 'item/tool/requestUserInput':
+      return { result: { answers: {} } };
+    // Anything else — auth token refresh, attestation, client-side tool calls —
+    // needs a real client. Saying so beats inventing an empty success.
+    default:
+      return {
+        error: {
+          code: -32601,
+          message: `codex-bridge cannot service ${method}: it is a headless client with no user to ask`,
+        },
+      };
+  }
+}
+
 class AppServer {
   constructor(opts = {}) {
     this.nextId = 1;
@@ -106,9 +146,15 @@ class AppServer {
       return;
     }
     if (msg.method && msg.id !== undefined) {
-      // Server -> client request (e.g. approval). Answer it so turns never hang.
-      const reply = this.serverRequestHandler ? this.serverRequestHandler(msg.method, msg.params) : {};
-      this._write({ jsonrpc: '2.0', id: msg.id, result: reply || {} });
+      // Server -> client request (approval, elicitation, ...). Answer it so
+      // turns never hang; onServerRequest may override, returning undefined to
+      // fall through to the default.
+      let answer;
+      if (this.serverRequestHandler) {
+        const custom = this.serverRequestHandler(msg.method, msg.params);
+        if (custom !== undefined) answer = { result: custom };
+      }
+      this._write({ jsonrpc: '2.0', id: msg.id, ...(answer || defaultServerReply(msg.method)) });
       return;
     }
     if (msg.method) { for (const fn of this.notifHandlers) fn(msg.method, msg.params || {}); }
@@ -141,4 +187,4 @@ class AppServer {
   stop() { try { this.proc && this.proc.kill(); } catch { /* ignore */ } }
 }
 
-module.exports = { AppServer, resolveCodexJs };
+module.exports = { AppServer, resolveCodexJs, defaultServerReply };
